@@ -47,8 +47,45 @@ export class WebSocketLink extends ApolloLink {
   }
 
   public request(operation: Operation): Observable<FetchResult> | null {
-    return this.subscriptionClient.request(operation) as Observable<
-      FetchResult
-    >;
+    return new Observable<FetchResult>(obs => {
+      let unsubscribed = false;
+      // helper function to request new subscriptions
+      let subscription;
+      const createSubscription = () => {
+        subscription = this.subscriptionClient.request(operation).subscribe({
+          next(value) {
+            obs.next(value);
+          },
+          error(err) {
+            obs.error(err);
+          },
+          complete() {
+            obs.complete();
+          },
+        });
+      };
+      // start off with a new subscription request
+      createSubscription();
+      // add a event listener to resubscribe on reconnect
+      const off = this.subscriptionClient.onReconnected(async () => {
+        // unsubscribe from the existing request
+        subscription.unsubscribe();
+        // call the reconnect callback (such as a function to re-execute a query), if necessary
+        const context = operation.getContext();
+        if (context.onReconnect) {
+          await context.onReconnect();
+        }
+        // subscribe with a new request if unsubscribe wasn't called during the callback
+        if (!unsubscribed) {
+          createSubscription();
+        }
+      });
+      // remove the event listener and unsubscribe from the latest request on unsubscribe
+      return () => {
+        unsubscribed = true;
+        off();
+        subscription.unsubscribe();
+      };
+    });
   }
 }
